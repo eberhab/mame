@@ -75,8 +75,8 @@ public:
 		m_i8255(*this, "ppi8255"),
 		m_i8259(*this, "i8259"),
 		m_fd1797(*this, "fd1797"),
-		m_floppy0(*this, "fd1797:0:5dd"),
-		m_floppy1(*this, "fd1797:1:5dd"),
+		m_floppy(*this, "fd1797:%u", 0U),
+		m_floppy_config(*this, "FLOPPY"),
 		m_apb(*this, "apb"),
 		m_hdc(*this, "hdc"),
 		m_palette(*this, "palette")
@@ -93,8 +93,8 @@ private:
 	required_device<i8255_device> m_i8255;
 	required_device<pic8259_device> m_i8259;
 	required_device<fd1797_device> m_fd1797;
-	required_device<floppy_image_device> m_floppy0;
-	required_device<floppy_image_device> m_floppy1;
+	required_device_array<floppy_connector, 2> m_floppy;
+	required_ioport m_floppy_config;
 	optional_device<m20_8086_device> m_apb;
 	optional_device<wd1000_device> m_hdc;
 
@@ -161,8 +161,8 @@ port21      =   0x21        !TTL latch
 !       1 deselects floppy 0
 !   B1  0 selects floppy 1
 !       1 deselects floppy 1
-!   B2  Motor On (Not Used)
-!   B3  0 selects double density    0 => Skip basic tests
+!   B2  Motor On (640 KB drives)
+!   B3  0 selects double density    BIOS 1.0: 0 => Skip basic tests
 !       1 selects single density    1 => Perform basic tests
 !                                   Latched copy when B7 is written to Port21
 !   B4  Uncommitted output          0 => 128K card(s) present
@@ -173,6 +173,10 @@ port21      =   0x21        !TTL latch
 !   B6  Uncommitted output          0 => RAM
 !                                   1 => ROM (???)
 !   B7  See B3 input                0 => colour card present
+
+With BIOS 2.0, input bits 4-3 select the floppy drive type:
+00 = prompt, 01 = 160 KB, 10 = 320 KB, 11 = 640 KB.
+The X4-X5 and ZA motherboard jumpers apply to both drives.
 */
 
 uint16_t m20_state::port21_r()
@@ -187,22 +191,18 @@ void m20_state::port21_w(uint16_t data)
 	m_port21 = (m_port21 & 0xf8) | (data & 0x7);
 
 	// floppy drive select
-	if (data & 1) {
-		m_floppy0->mon_w(0);
-		m_fd1797->set_floppy(m_floppy0);
+	floppy_image_device *selected = nullptr;
+	for (unsigned i = 0; i < m_floppy.size(); i++)
+	{
+		floppy_image_device *const floppy = m_floppy[i]->get_device();
+		if (floppy)
+			// BIOS 2.0 holds the common motor-on line high for 640 KB drives.
+			// Keep both motors running while switching between the drives.
+			floppy->mon_w(!(BIT(data, i) || BIT(data, 2)));
+		if (BIT(data, i))
+			selected = floppy;
 	}
-	else
-		m_floppy0->mon_w(1);
-
-	if (data & 2) {
-		m_floppy1->mon_w(0);
-		m_fd1797->set_floppy(m_floppy1);
-	}
-	else
-		m_floppy1->mon_w(1);
-
-	if(!(data & 3))
-		m_fd1797->set_floppy(nullptr);
+	m_fd1797->set_floppy(selected);
 
 	// density select 1 - sd, 0 - dd
 	m_fd1797->dden_w(data & 8);
@@ -752,8 +752,10 @@ void m20_state::machine_reset()
 	else
 		m_port21 = 0xff;
 
-	if(system_bios() > 0)  // bits have different meanings?
-		m_port21 &= ~8;
+	// system_bios() is one-based.  BIOS 1.0 uses bit 3 to enable POST;
+	// BIOS 2.0 interprets bits 4-3 as the motherboard drive-type jumpers.
+	if (system_bios() > 1)
+		m_port21 = (m_port21 & ~0x18) | m_floppy_config->read();
 
 	m_fd1797->reset();
 
@@ -765,9 +767,19 @@ void m20_state::machine_reset()
 }
 
 
+static INPUT_PORTS_START( m20 )
+	PORT_START("FLOPPY")
+	PORT_CONFNAME(0x18, 0x10, "Floppy Drive Type (BIOS 2.0)")
+	PORT_CONFSETTING(0x00, "Prompt at startup")
+	PORT_CONFSETTING(0x08, "160 KB")
+	PORT_CONFSETTING(0x10, "320 KB")
+	PORT_CONFSETTING(0x18, "640 KB")
+INPUT_PORTS_END
+
 static void m20_floppies(device_slot_interface &device)
 {
 	device.option_add("5dd", FLOPPY_525_DD);
+	device.option_add("5qd", FLOPPY_525_QD);
 }
 
 void m20_state::floppy_formats(format_registration &fr)
@@ -806,8 +818,8 @@ void m20_state::m20(machine_config &config)
 	/* Devices */
 	FD1797(config, m_fd1797, 1000000);
 	m_fd1797->intrq_wr_callback().set(m_i8259, FUNC(pic8259_device::ir0_w));
-	FLOPPY_CONNECTOR(config, "fd1797:0", m20_floppies, "5dd", m20_state::floppy_formats);
-	FLOPPY_CONNECTOR(config, "fd1797:1", m20_floppies, "5dd", m20_state::floppy_formats);
+	FLOPPY_CONNECTOR(config, m_floppy[0], m20_floppies, "5dd", m20_state::floppy_formats);
+	FLOPPY_CONNECTOR(config, m_floppy[1], m20_floppies, "5dd", m20_state::floppy_formats);
 
 	mc6845_device &crtc(MC6845(config, "crtc", PIXEL_CLOCK/8)); /* hand tuned to get ~50 fps */
 	crtc.set_screen("screen");
@@ -901,6 +913,6 @@ ROM_END
 
 
 //    YEAR  NAME  PARENT  COMPAT  MACHINE  INPUT  CLASS      INIT        COMPANY     FULLNAME           FLAGS
-COMP( 1981, m20,  0,      0,      m20,     0,     m20_state, empty_init, "Olivetti", "Olivetti L1 M20", MACHINE_SUPPORTS_SAVE )
-COMP( 1981, m40,  m20,    0,      m20,     0,     m20_state, empty_init, "Olivetti", "Olivetti L1 M40", MACHINE_NOT_WORKING | MACHINE_NO_SOUND )
-COMP( 1986, m44,  0,      0,      m20,     0,     m20_state, empty_init, "Olivetti", "Olivetti L1 M44", MACHINE_NO_SOUND | MACHINE_NOT_WORKING )
+COMP( 1981, m20,  0,      0,      m20,     m20,   m20_state, empty_init, "Olivetti", "Olivetti L1 M20", MACHINE_SUPPORTS_SAVE )
+COMP( 1981, m40,  m20,    0,      m20,     m20,   m20_state, empty_init, "Olivetti", "Olivetti L1 M40", MACHINE_NOT_WORKING | MACHINE_NO_SOUND )
+COMP( 1986, m44,  0,      0,      m20,     m20,   m20_state, empty_init, "Olivetti", "Olivetti L1 M44", MACHINE_NO_SOUND | MACHINE_NOT_WORKING )
