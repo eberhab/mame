@@ -80,7 +80,7 @@ inline void i8255_device::check_interrupt(int port)
 		switch (port_mode(port))
 		{
 		case MODE_INPUT:
-			set_intr(port, (m_inte[port] && m_ibf[port]));
+			set_intr(port, (m_inte[port] && m_ibf[port] && (!m_level_sensitive_strobe || m_stb[port])));
 			break;
 
 		case MODE_OUTPUT:
@@ -90,7 +90,7 @@ inline void i8255_device::check_interrupt(int port)
 		break;
 
 	case MODE_2:
-		set_intr(port, ((m_inte1 && m_obf[port]) || (m_inte2 && m_ibf[port])));
+		set_intr(port, ((m_inte1 && m_obf[port]) || (m_inte2 && m_ibf[port] && (!m_level_sensitive_strobe || m_stb[port]))));
 		break;
 	}
 }
@@ -220,6 +220,7 @@ i8255_device::i8255_device(const machine_config &mconfig, device_type type, cons
 	, m_force_portb_in(is_ams40489)
 	, m_force_portc_out(is_ams40489)
 	, m_dont_clear_output_latches(is_ams40489)
+	, m_level_sensitive_strobe(false)
 	, m_in_pa_cb(*this, 0)
 	, m_in_pb_cb(*this, 0)
 	, m_in_pc_cb(*this, 0)
@@ -230,6 +231,7 @@ i8255_device::i8255_device(const machine_config &mconfig, device_type type, cons
 	, m_tri_pb_cb(*this, 0xff)
 	, m_tri_pc_cb(*this, 0xff)
 	, m_control(0)
+	, m_stb{ 1, 1 }
 	, m_intr{ 0, 0 }
 {
 }
@@ -255,6 +257,8 @@ void i8255_device::device_start()
 	save_item(NAME(m_inte1));
 	save_item(NAME(m_inte2));
 	save_item(NAME(m_intr));
+	if (m_level_sensitive_strobe)
+		save_item(NAME(m_stb));
 }
 
 
@@ -298,8 +302,8 @@ uint8_t i8255_device::read_mode1(int port)
 	}
 	else
 	{
-		// read data from input latch
-		data = m_input[port];
+		// The input latch is transparent while /STB is held low.
+		data = (!m_level_sensitive_strobe || m_stb[port]) ? m_input[port] : ((port == PORT_A) ? m_in_pa_cb(0) : m_in_pb_cb(0));
 
 		if (!machine().side_effects_disabled())
 		{
@@ -309,8 +313,8 @@ uint8_t i8255_device::read_mode1(int port)
 			// clear interrupt
 			set_intr(port, 0);
 
-			// clear input latch
-			m_input[port] = 0;
+			if (!m_level_sensitive_strobe)
+				m_input[port] = 0;
 		}
 	}
 
@@ -320,8 +324,8 @@ uint8_t i8255_device::read_mode1(int port)
 
 uint8_t i8255_device::read_mode2()
 {
-	// read data from input latch
-	uint8_t const data = m_input[PORT_A];
+	// The input latch is transparent while /STB is held low.
+	uint8_t const data = (!m_level_sensitive_strobe || m_stb[PORT_A]) ? m_input[PORT_A] : m_in_pa_cb(0);
 
 	if (!machine().side_effects_disabled())
 	{
@@ -331,8 +335,8 @@ uint8_t i8255_device::read_mode2()
 		// clear interrupt
 		set_intr(PORT_A, 0);
 
-		// clear input latch
-		m_input[PORT_A] = 0;
+		if (!m_level_sensitive_strobe)
+			m_input[PORT_A] = 0;
 	}
 
 	return data;
@@ -861,6 +865,9 @@ uint8_t i8255_device::ackb_r()
 
 void i8255_device::pc2_w(int state)
 {
+	int const previous = m_stb[PORT_B];
+	m_stb[PORT_B] = state;
+
 	if (group_mode(GROUP_B) == 1)
 	{
 		if (port_mode(PORT_B) == MODE_OUTPUT)
@@ -877,7 +884,7 @@ void i8255_device::pc2_w(int state)
 		else
 		{
 			// port B strobe
-			if (!state)
+			if (m_level_sensitive_strobe ? (state != previous) : !state)
 			{
 				LOG("I8255 Port B Strobe\n");
 
@@ -885,7 +892,10 @@ void i8255_device::pc2_w(int state)
 				m_input[PORT_B] = m_in_pb_cb(0);
 
 				// set input buffer flag
-				set_ibf(PORT_B, 1);
+				if (!state)
+					set_ibf(PORT_B, 1);
+				else
+					check_interrupt(PORT_B);
 			}
 		}
 	}
@@ -894,10 +904,13 @@ void i8255_device::pc2_w(int state)
 
 void i8255_device::pc4_w(int state)
 {
+	int const previous = m_stb[PORT_A];
+	m_stb[PORT_A] = state;
+
 	if ((group_mode(GROUP_A) == 2) || ((group_mode(GROUP_A) == 1) && (port_mode(PORT_A) == MODE_INPUT)))
 	{
 		// port A strobe
-		if (!state)
+		if (m_level_sensitive_strobe ? (state != previous) : !state)
 		{
 			LOG("I8255 Port A Strobe\n");
 
@@ -905,7 +918,10 @@ void i8255_device::pc4_w(int state)
 			m_input[PORT_A] = m_in_pa_cb(0);
 
 			// set input buffer flag
-			set_ibf(PORT_A, 1);
+			if (!state)
+				set_ibf(PORT_A, 1);
+			else
+				check_interrupt(PORT_A);
 		}
 	}
 }

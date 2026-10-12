@@ -40,6 +40,7 @@ E I1     Vectored interrupt error
 #include "m20_8086.h"
 #include "m20_kbd.h"
 
+#include "bus/centronics/ctronics.h"
 #include "bus/rs232/rs232.h"
 #include "imagedev/harddriv.h"
 #include "machine/wd1000.h"
@@ -84,6 +85,7 @@ public:
 	}
 
 	void m20(machine_config &config);
+	void m20_base(machine_config &config);
 
 private:
 	required_device<z8001_device> m_maincpu;
@@ -781,7 +783,7 @@ static void keyboard(device_slot_interface &device)
 	device.option_add("m20", M20_KEYBOARD);
 }
 
-void m20_state::m20(machine_config &config)
+void m20_state::m20_base(machine_config &config)
 {
 	/* basic machine hardware */
 	Z8001(config, m_maincpu, MAIN_CLOCK);
@@ -861,6 +863,32 @@ void m20_state::m20(machine_config &config)
 	SOFTWARE_LIST(config, "flop_list").set_original("m20");
 }
 
+void m20_state::m20(machine_config &config)
+{
+	m20_base(config);
+
+	// Keep the M20 printer wiring separate from the M40/M44 skeleton configurations.
+	m_i8255->set_level_sensitive_strobe(true);
+	m_i8255->out_pa_callback().set("printer_data", FUNC(output_latch_device::write));
+	m_i8255->in_pb_callback().set("printer_status", FUNC(input_buffer_device::read));
+	m_i8255->out_pc_callback().set("centronics", FUNC(centronics_device::write_strobe)).bit(5);
+	m_i8255->out_pc_callback().append(m_i8259, FUNC(pic8259_device::ir6_w)).bit(3);
+	// J318 loops PC4 back to /STB B (PC2), allowing continuous status reads.
+	m_i8255->out_pc_callback().append(m_i8255, FUNC(i8255_device::pc2_w)).bit(4);
+
+	// J6 parallel interface (Hardware Reference Manual, pp. 3-1/3-2).
+	// PA0-7: data, PC5: /STROBE, PC6: /ACK; PC3: INTR A to IR6 (default jumper).
+	// PB1: BUSY, PB3: paper empty, PB4: selected, PB5: /FAULT.
+	centronics_device &centronics(CENTRONICS(config, "centronics", centronics_devices, "printer"));
+	centronics.ack_handler().set(m_i8255, FUNC(i8255_device::pc6_w));
+	centronics.busy_handler().set("printer_status", FUNC(input_buffer_device::write_bit1));
+	centronics.perror_handler().set("printer_status", FUNC(input_buffer_device::write_bit3));
+	centronics.select_handler().set("printer_status", FUNC(input_buffer_device::write_bit4));
+	centronics.fault_handler().set("printer_status", FUNC(input_buffer_device::write_bit5));
+	centronics.set_output_latch(OUTPUT_LATCH(config, "printer_data"));
+	INPUT_BUFFER(config, "printer_status");
+}
+
 ROM_START(m20)
 	ROM_REGION(0x2000,"maincpu", 0)
 	ROM_SYSTEM_BIOS( 0, "m20", "M20 1.0" )
@@ -902,5 +930,5 @@ ROM_END
 
 //    YEAR  NAME  PARENT  COMPAT  MACHINE  INPUT  CLASS      INIT        COMPANY     FULLNAME           FLAGS
 COMP( 1981, m20,  0,      0,      m20,     0,     m20_state, empty_init, "Olivetti", "Olivetti L1 M20", MACHINE_SUPPORTS_SAVE )
-COMP( 1981, m40,  m20,    0,      m20,     0,     m20_state, empty_init, "Olivetti", "Olivetti L1 M40", MACHINE_NOT_WORKING | MACHINE_NO_SOUND )
-COMP( 1986, m44,  0,      0,      m20,     0,     m20_state, empty_init, "Olivetti", "Olivetti L1 M44", MACHINE_NO_SOUND | MACHINE_NOT_WORKING )
+COMP( 1981, m40,  m20,    0,      m20_base, 0,    m20_state, empty_init, "Olivetti", "Olivetti L1 M40", MACHINE_NOT_WORKING | MACHINE_NO_SOUND )
+COMP( 1986, m44,  0,      0,      m20_base, 0,    m20_state, empty_init, "Olivetti", "Olivetti L1 M44", MACHINE_NO_SOUND | MACHINE_NOT_WORKING )

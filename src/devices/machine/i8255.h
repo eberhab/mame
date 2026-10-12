@@ -59,6 +59,10 @@ public:
 	auto tri_pb_callback() { return m_tri_pb_cb.bind(); }
 	auto tri_pc_callback() { return m_tri_pc_cb.bind(); }
 
+	// Opt in to level-sensitive input strobes and retained input latches.
+	// Legacy drivers may use pc2_w/pc4_w as pulse callbacks or consume input on read.
+	void set_level_sensitive_strobe(bool enabled) { m_level_sensitive_strobe = enabled; }
+
 	uint8_t read(offs_t offset);
 	void write(offs_t offset, uint8_t data );
 
@@ -107,6 +111,8 @@ private:
 	void set_mode(uint8_t data);
 	void set_pc_bit(int bit, int state);
 
+	bool m_level_sensitive_strobe;
+
 	devcb_read8        m_in_pa_cb;
 	devcb_read8        m_in_pb_cb;
 	devcb_read8        m_in_pc_cb;
@@ -122,6 +128,7 @@ private:
 	uint8_t m_control;            // mode control word
 	uint8_t m_output[3];          // output latch
 	uint8_t m_input[3];           // input latch
+	int m_stb[2];               // input strobe, negative logic
 
 	int m_ibf[2];               // input buffer full flag
 	int m_obf[2];               // output buffer full flag, negative logic
