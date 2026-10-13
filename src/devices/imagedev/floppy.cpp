@@ -31,6 +31,7 @@
 
 #include "util/ioprocs.h"
 #include "util/ioprocsfilter.h"
+#include "util/ioprocsvec.h"
 #include "util/zippath.h"
 
 #include <algorithm>
@@ -511,22 +512,44 @@ void floppy_image_device::commit_image()
 {
 	if(m_writing)
 		write_do_flush(machine().time());
-	m_image_dirty = false;
 	if(!m_output_format || !m_output_format->supports_save())
 		return;
 
-	check_for_file();
-	auto io = util::random_read_write_fill(image_core_file(), 0xff);
+	// A format may reject a modified image (e.g. missing sectors in a raw
+	// sector dump).  Complete the conversion before touching the mounted file.
+	std::vector<uint8_t> data;
+	util::vector_read_write_adapter<> buffer(data);
+	auto io = util::random_read_write_fill(buffer, 0xff);
 	if(!io) {
 		popmessage("Error, out of memory");
 		return;
 	}
 
-	std::error_condition const err = image_core_file().truncate(0);
-	if (err)
-		popmessage("Error, unable to truncate image: %s", err.message());
+	if (!m_output_format->save(*io, m_variants, *m_image)) {
+		popmessage("Error saving %s: image cannot be saved as %s; existing file unchanged", filename(), m_output_format->description());
+		return;
+	}
 
-	m_output_format->save(*io, m_variants, *m_image);
+	check_for_file();
+	auto const [write_error, actual] = write_at(image_core_file(), 0, data.data(), data.size());
+	if (write_error || actual != data.size()) {
+		popmessage("Error writing floppy image: %s", write_error ? write_error.message() : "Short write");
+		return;
+	}
+
+	std::error_condition const err = image_core_file().truncate(data.size());
+	if (err)
+	{
+		popmessage("Error, unable to truncate image: %s", err.message());
+		return;
+	}
+
+	if (std::error_condition const flush_error = image_core_file().flush(); flush_error)
+	{
+		popmessage("Error flushing floppy image: %s", flush_error.message());
+		return;
+	}
+	m_image_dirty = false;
 }
 
 void floppy_image_device::device_config_complete()
