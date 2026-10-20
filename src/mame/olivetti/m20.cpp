@@ -41,6 +41,7 @@ E I1     Vectored interrupt error
 #include "m20_kbd.h"
 
 #include "bus/centronics/ctronics.h"
+#include "bus/centronics/printer.h"
 #include "bus/rs232/rs232.h"
 #include "imagedev/harddriv.h"
 #include "machine/wd1000.h"
@@ -783,6 +784,11 @@ static void keyboard(device_slot_interface &device)
 	device.option_add("m20", M20_KEYBOARD);
 }
 
+static void m20_centronics_devices(device_slot_interface &device)
+{
+	device.option_add("printer", CENTRONICS_PRINTER);
+}
+
 void m20_state::m20_base(machine_config &config)
 {
 	/* basic machine hardware */
@@ -879,7 +885,7 @@ void m20_state::m20(machine_config &config)
 	// J6 parallel interface (Hardware Reference Manual, pp. 3-1/3-2).
 	// PA0-7: data, PC5: /STROBE, PC6: /ACK; PC3: INTR A to IR6 (default jumper).
 	// PB1: BUSY, PB3: paper empty, PB4: selected, PB5: /FAULT.
-	centronics_device &centronics(CENTRONICS(config, "centronics", centronics_devices, "printer"));
+	centronics_device &centronics(CENTRONICS(config, "centronics", m20_centronics_devices, "printer"));
 	centronics.ack_handler().set(m_i8255, FUNC(i8255_device::pc6_w));
 	centronics.busy_handler().set("printer_status", FUNC(input_buffer_device::write_bit1));
 	centronics.perror_handler().set("printer_status", FUNC(input_buffer_device::write_bit3));
